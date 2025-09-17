@@ -54,17 +54,18 @@ class Client:
 
     # ---------------- Reader thread ---------------- #
     def reader(self):
-        # for line in sys.stdin:
-
-        #     self.bump_clock_event()
-        #     self.send_q.put(line.rstrip("\n"))
         for line in sys.stdin:
             line = line.rstrip("\n")
-            self.bump_clock_event()  # bump on stdin input
             if line == "q":
                 self.send_q.put(None)  # signal EOF if 'q' is typed
                 break
-        self.send_q.put(line)
+            self.bump_clock_event()  # bump on stdin input
+            self.send_q.put(line)
+        # Only put None once at EOF if not already sent
+        if not self.send_q.qsize() or self.send_q.queue[-1] is not None:
+            self.send_q.put(None)
+
+            self.send_q.put(line)
         self.bump_clock_event()
         self.send_q.put(None)  # EOF
 
@@ -106,6 +107,7 @@ class Client:
                 # Unexpected command = protocol error → close
                 print(f"Unexpected command {cmd}, closing session.")
                 self.running = False
+
 
     # ---------------- Main run ---------------- #
     def run(self):
