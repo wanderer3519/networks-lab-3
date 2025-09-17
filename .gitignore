@@ -21,3 +21,5 @@ __pycache__/
 /bin/
 /build/
 /dist/
+__pycache__/
+*.pyc

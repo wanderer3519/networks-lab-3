@@ -45,7 +45,10 @@ class ServerProtocol:
     def datagram_received(self, data, addr):
         pkt = self.unpack_header(data)
         if pkt is None:
+            print("Received malformed packet, ignoring.")
             return
+        # Debug: print raw packet info
+        # print(f"[DEBUG] Received packet: seq={pkt['seq']} cmd={pkt['command']} sid=0x{pkt['session_id']:08x} payload={pkt['payload']}")
 
         sid = pkt["session_id"]
         cmd = pkt["command"]
@@ -53,7 +56,9 @@ class ServerProtocol:
 
         if sid not in self.sessions:
             if cmd != self.CMD_HELLO:
+                print(f"Unknown session 0x{sid:08x}, no hello, ignoring packet.")
                 return
+            
             self.sessions[sid] = {"expected": 0, "addr": addr, "last_seen": time.time()}
             print(f"0x{sid:08x} [{cseq}] Session created")
             hdr = self.pack_header(
@@ -64,12 +69,19 @@ class ServerProtocol:
             return
 
         sess = self.sessions[sid]
+        # Update last_seen on every valid packet
+        sess["last_seen"] = time.time()
 
         if cmd == self.CMD_DATA:
             exp = sess["expected"]
+            # print(f"[DEBUG] CMD_DATA: cseq={cseq}, expected={exp}")
             if cseq == exp:
                 # in-order packet
-                line = pkt["payload"].decode(errors="replace").rstrip("\n")
+                try:
+                    line = pkt["payload"].decode(errors="replace").rstrip("\n")
+                except Exception as e:
+                    # print(f"[DEBUG] Payload decode error: {e}")
+                    line = str(pkt["payload"])
                 print(f"0x{sid:08x} [{cseq}] {line}")
                 sess["expected"] += 1
                 hdr = self.pack_header(
@@ -80,17 +92,13 @@ class ServerProtocol:
 
             elif cseq == exp - 1:
                 # duplicate
-                print("Duplicate packet!")
-
-            elif cseq < exp - 1:
-                # protocol error → close session
-                print(f"0x{sid:08x} Protocol error (old packet {cseq} < expected {exp})")
-                hdr = self.pack_header(
-                    self.CMD_GOODBYE, self.server_seq, sid, self.server_clock
-                )
+                # print("Duplicate packet!")
+                print(f"0x{sid:08x} [{cseq}] Duplicate packet (re-ACKing)")
+                hdr = self.pack_header(self.CMD_ALIVE, self.server_seq, sid, self.server_clock)
                 self.transport.sendto(hdr, addr)
+                print(f"Re-sent ALIVE -> 0x{sid:08x} [{self.server_seq-1}]")
                 self.server_seq += 1
-                del self.sessions[sid]
+
 
             elif cseq > exp:
                 # gap (lost packets)
@@ -104,6 +112,19 @@ class ServerProtocol:
                 )
                 self.transport.sendto(hdr, addr)
                 self.server_seq += 1
+
+            else:
+                # protocol error → close session
+                print(f"0x{sid:08x} Protocol error (old packet {cseq} < expected {exp})")
+                hdr = self.pack_header(
+                    self.CMD_GOODBYE, self.server_seq, sid, self.server_clock
+                )
+                self.transport.sendto(hdr, addr)
+                self.server_seq += 1
+                del self.sessions[sid]
+
+
+                
 
         elif cmd == self.CMD_GOODBYE:
             print(f"0x{sid:08x} [{cseq}] GOODBYE from client.")
