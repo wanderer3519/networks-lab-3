@@ -1,7 +1,7 @@
 # client-server
 
-# Diagram of client
+# FSA of client
 ![Diagram of client](client_FSA.png)
 
-# Diagram of server
+# FSA of server
 ![Diagram of server](server_FSA.png)
