@@ -1,0 +1,23 @@
+# Compiled binary
+server_bin
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS metadata
+.DS_Store
+
+# Build/backup artifacts
+*.out
+*.o
+*.obj
+*.log
+*.swp
+*~
+
+# If you generate other binaries later
+/bin/
+/build/
+/dist/

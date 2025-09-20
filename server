@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# all parameters are optional
+# example usage: 
+#       ./server 8080
+#       ./server
+
+
+BINARY="./server_bin"
+SRC="server.cpp"
+
+# Compiling only if the binary does not exist or is older than the source
+if [ ! -f "$BINARY" ] || [ "$SRC" -nt "$BINARY" ]; then
+    echo "Compiling server..."
+    g++ -std=c++17 "$SRC" -o "$BINARY" -pthread || {
+        echo "Compilation failed"
+        exit 1
+    }
+fi
+
+# Default port = 8080
+PORT=${1:-8080}
+"$BINARY" "$PORT"
