@@ -4,5 +4,8 @@ client:
 server:
 	python3 srikrishna/Server/server_uap.py 1234
 
-dotsky:
+dotsky-client:
 	python3 srikrishna/Client/client_uap.py localhost 1234 < Dostoyevsky.txt
+
+dotsky-server:
+	python3 srikrishna/Server/server_uap.py 1234 > server_output.txt
