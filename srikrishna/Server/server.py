@@ -1,8 +1,9 @@
 '''
     Asynchronous UADP server handling multiple clients with session management,
+    Modified to be more susceptible to packet loss
 '''
 
-import asyncio, struct, time, sys
+import asyncio, struct, time, sys, socket
 
 
 class ServerProtocol:
@@ -39,18 +40,25 @@ class ServerProtocol:
 
     def connection_made(self, transport):
         self.transport = transport
-        print(f"Waiting on port {transport.get_extra_info('sockname')[1]} (asyncio)...")
+        
+        # Set smaller socket buffers to encourage drops
+        sock = transport.get_extra_info('socket')
+        if sock:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+            except:
+                pass
+                
+        print(f"Waiting on port {transport.get_extra_info('sockname')[1]}...")
         asyncio.create_task(self.check_timeouts())
 
     def datagram_received(self, data, addr):
         pkt = self.unpack_header(data)
-        # Add this line at the beginning of the `datagram_received` method after unpacking the header:
         if pkt is None:
             print("Received malformed packet, ignoring.")
             return
+            
         self.server_clock = max(self.server_clock, pkt["clock"]) + 1
-        # Debug: print raw packet info
-        # print(f"[DEBUG] Received packet: seq={pkt['seq']} cmd={pkt['command']} sid=0x{pkt['session_id']:08x} payload={pkt['payload']}")
 
         sid = pkt["session_id"]
         cmd = pkt["command"]
@@ -76,16 +84,17 @@ class ServerProtocol:
 
         if cmd == self.CMD_DATA:
             exp = sess["expected"]
-            # print(f"[DEBUG] CMD_DATA: cseq={cseq}, expected={exp}")
+            
             if cseq == exp:
                 # in-order packet
                 try:
                     line = pkt["payload"].decode(errors="replace").rstrip("\n")
                 except Exception as e:
-                    # print(f"[DEBUG] Payload decode error: {e}")
                     line = str(pkt["payload"])
                 print(f"0x{sid:08x} [{cseq}] {line}")
                 sess["expected"] += 1
+                
+                # Send ALIVE response
                 hdr = self.pack_header(
                     self.CMD_ALIVE, self.server_seq, sid, self.server_clock
                 )
@@ -93,16 +102,28 @@ class ServerProtocol:
                 self.server_seq += 1
 
             elif cseq == exp - 1:
-                # duplicate
+                # duplicate packet
                 print(f"0x{sid:08x} [{cseq}] Duplicate packet") 
+                # Still send ALIVE for duplicate
+                hdr = self.pack_header(
+                    self.CMD_ALIVE, self.server_seq, sid, self.server_clock
+                )
+                self.transport.sendto(hdr, addr)
+                self.server_seq += 1
 
             elif cseq > exp:
-                # gap (lost packets)
+                # gap (lost packets) - this is what we want to see!
                 for missing in range(exp, cseq):
                     print(f"0x{sid:08x} [{missing}] Lost packet!")
-                line = pkt["payload"].decode(errors="replace").rstrip("\n")
+                    
+                try:
+                    line = pkt["payload"].decode(errors="replace").rstrip("\n")
+                except Exception as e:
+                    line = str(pkt["payload"])
                 print(f"0x{sid:08x} [{cseq}] {line}")
                 sess["expected"] = cseq + 1
+                
+                # Send ALIVE response
                 hdr = self.pack_header(
                     self.CMD_ALIVE, self.server_seq, sid, self.server_clock
                 )
@@ -110,7 +131,7 @@ class ServerProtocol:
                 self.server_seq += 1
 
             else:
-                # protocol error → close session
+                # protocol error → close session (old packet)
                 print(f"0x{sid:08x} Protocol error (old packet {cseq} < expected {exp})")
                 hdr = self.pack_header(
                     self.CMD_GOODBYE, self.server_seq, sid, self.server_clock
@@ -118,9 +139,6 @@ class ServerProtocol:
                 self.transport.sendto(hdr, addr)
                 self.server_seq += 1
                 del self.sessions[sid]
-
-
-                
 
         elif cmd == self.CMD_GOODBYE:
             print(f"0x{sid:08x} [{cseq}] GOODBYE from client.")

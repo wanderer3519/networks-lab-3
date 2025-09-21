@@ -19,7 +19,14 @@ class Client:
         self.seq = 0
         self.clock = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(0.2)  # non-blocking receive with small timeout
+        
+        # Smaller socket buffers to encourage drops
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
+        except:
+            pass
+            
+        self.sock.settimeout(0.1)  # Much smaller timeout for faster operation
         self.send_q = queue.Queue()
         self.SERVER_HOST = host
         self.SERVER_PORT = port
@@ -68,11 +75,8 @@ class Client:
                 self.send_q.put(None)  # signal EOF if 'q' is typed
                 break
 
-            # self.send_q.put(line)
-            encoded = line.encode()
-            for i in range(0, len(encoded), self.MAX_PAYLOAD):
-                chunk = encoded[i:i + self.MAX_PAYLOAD]
-                self.send_q.put(chunk)
+            # Send entire lines as single packets for faster transmission
+            self.send_q.put(line.encode())
             
         # Only put None once at EOF if not already sent
         if not self.send_q.qsize() or self.send_q.queue[-1] is not None:
@@ -98,7 +102,7 @@ class Client:
                 # Server acknowledged our HELLO
                 self.bump_clock_recv(pkt["clock"])
                 self.hello_ack = True
-                print("Session established.")
+                print("Session established.", file=sys.stderr)
 
             elif cmd == self.CMD_ALIVE:
                 # Server acknowledged our DATA
@@ -113,14 +117,13 @@ class Client:
             elif cmd == self.CMD_GOODBYE:
                 # Server closed session → client closes immediately
                 self.bump_clock_recv(pkt["clock"])
-                print("Server closed session.")
+                print("Server closed session.", file=sys.stderr)
                 self.running = False
 
             else:
                 # Unexpected command = protocol error → close
-                print(f"Unexpected command {cmd}, closing session.")
+                print(f"Unexpected command {cmd}, closing session.", file=sys.stderr)
                 self.running = False
-
 
     # ---------------- Main run ---------------- #
     def run(self):
@@ -138,28 +141,33 @@ class Client:
 
         # Wait until HELLO ack is received
         while self.running and not hasattr(self, "hello_ack"):
-            time.sleep(0.01)
+            time.sleep(0.001)  # Much smaller sleep
 
-        # Step 2: DATA loop
-
+        # Step 2: DATA loop - Send packets as fast as possible
+        pending_packets = []
+        
         while self.running:
-            if not self.send_q.empty():
+            # Collect multiple packets before sending
+            batch_size = 0
+            while not self.send_q.empty() and batch_size < 10:  # Send in small batches
                 item = self.send_q.get()
                 if item is None:
-                    print("eof")
+                    print("eof", file=sys.stderr)
                     self.bump_clock_event()
                     self.sock.sendto(
                         self.pack_header(self.CMD_GOODBYE, self.seq, self.session_id, self.clock),
                         (self.SERVER_HOST, self.SERVER_PORT),
                     )
                     self.seq += 1
+                    self.running = False
                     break  # go to Closing state
 
+                pending_packets.append(item)
+                batch_size += 1
+
+            # Send all pending packets rapidly
+            for payload in pending_packets:
                 self.bump_clock_event()
-                if isinstance(item, bytes):
-                    payload = item
-                else:
-                    payload = (item + "\n").encode()
                 self.sock.sendto(
                     self.pack_header(
                         self.CMD_DATA, self.seq, self.session_id, self.clock, payload
@@ -167,7 +175,15 @@ class Client:
                     (self.SERVER_HOST, self.SERVER_PORT),
                 )
                 self.seq += 1
-            time.sleep(0.001)  # very small sleep to avoid busy loop
+                # No sleep here - send as fast as possible!
+            
+            pending_packets.clear()
+            
+            if not self.running:
+                break
+                
+            # Very small sleep only when no data to send
+            time.sleep(0.0001)
 
         # Step 3: closing
         closing_start = time.time()
